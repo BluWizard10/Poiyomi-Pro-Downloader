@@ -19,43 +19,6 @@ namespace Poiyomi.Pro
         private static string cachedPackageDir = null;
 
         /// <summary>
-        /// Sub-path (relative to the shaders root) that must not be extracted.
-        /// ThryEditor is provided by its own VCC package, so the copy bundled inside
-        /// the Poiyomi Pro package is skipped to avoid duplicate/conflicting scripts.
-        /// </summary>
-        private const string ExcludedSubPath = "Scripts/ThryEditor";
-
-        /// <summary>
-        /// Determines whether an asset path falls inside the excluded ThryEditor
-        /// directory and should therefore be skipped during extraction. Handles both
-        /// path separators and treats a ".meta" companion the same as its asset.
-        /// 
-        /// The asset path from the archive. May be absolute-under-Assets
-        /// (e.g. "Assets/_PoiyomiShaders/Scripts/ThryEditor/...") or relative to the
-        /// package root (e.g. "_PoiyomiShaders/Scripts/ThryEditor/...").
-        /// </summary>
-        private static bool ShouldExcludeFromExtraction(string assetPath)
-        {
-            if (string.IsNullOrEmpty(assetPath))
-                return false;
-
-            // Normalize separators so the check works for zip and unitypackage inputs.
-            var normalized = assetPath.Replace('\\', '/');
-
-            // Treat the ".meta" sidecar the same as the asset (or folder) it describes,
-            // so the excluded folder's own meta file is dropped too.
-            if (normalized.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
-                normalized = normalized.Substring(0, normalized.Length - ".meta".Length);
-
-            // Exclude the ThryEditor folder itself and everything beneath it, whether or
-            // not the path carries a leading segment (e.g. "Assets/" or "_PoiyomiShaders/").
-            return normalized.Equals(ExcludedSubPath, StringComparison.OrdinalIgnoreCase)
-                || normalized.StartsWith(ExcludedSubPath + "/", StringComparison.OrdinalIgnoreCase)
-                || normalized.EndsWith("/" + ExcludedSubPath, StringComparison.OrdinalIgnoreCase)
-                || normalized.IndexOf("/" + ExcludedSubPath + "/", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        /// <summary>
         /// Extracts the downloaded package into this installer's package directory.
         /// </summary>
         public static async Task<bool> ExtractToPackageDirectory(string packagePath, bool deleteInstaller = true)
@@ -263,7 +226,6 @@ namespace Poiyomi.Pro
 
                     // Process extracted content
                     var extractedFiles = 0;
-                    var skippedFiles = 0;
                     var guidFolders = Directory.GetDirectories(tempDir);
 
                     foreach (var guidFolder in guidFolders)
@@ -280,13 +242,6 @@ namespace Poiyomi.Pro
                         // Skip if not under Assets/ (shouldn't happen but safety check)
                         if (!originalPath.StartsWith("Assets/"))
                             continue;
-
-                        // Skip ThryEditor - it's supplied by its own VCC package.
-                        if (ShouldExcludeFromExtraction(originalPath))
-                        {
-                            skippedFiles++;
-                            continue;
-                        }
 
                         // Convert Assets/... path to package directory path
                         // e.g., "Assets/_PoiyomiShaders/..." -> "{packageDir}/_PoiyomiShaders/..."
@@ -314,11 +269,6 @@ namespace Poiyomi.Pro
                     
                     // Refresh to pick up new files
                     AssetDatabase.Refresh();
-
-                    if (skippedFiles > 0)
-                    {
-                        Debug.Log($"[PoiyomiPro] Skipped {skippedFiles} {ExcludedSubPath} file(s); provided by ThryEditor's VCC package");
-                    }
 
                     if (extractedFiles == 0)
                     {
@@ -454,7 +404,6 @@ namespace Poiyomi.Pro
             try
             {
                 var extractedCount = 0;
-                var skippedCount = 0;
                 await Task.Run(() =>
                 {
                     using (var archive = ZipFile.OpenRead(zipPath))
@@ -463,13 +412,6 @@ namespace Poiyomi.Pro
                         {
                             if (string.IsNullOrEmpty(entry.Name))
                                 continue;
-
-                            // Skip ThryEditor - it's supplied by its own VCC package.
-                            if (ShouldExcludeFromExtraction(entry.FullName))
-                            {
-                                skippedCount++;
-                                continue;
-                            }
 
                             var destinationPath = Path.Combine(targetDir, entry.FullName);
                             var destinationDir = Path.GetDirectoryName(destinationPath);
@@ -484,10 +426,6 @@ namespace Poiyomi.Pro
                 });
 
                 Debug.Log($"[PoiyomiPro] Extracted {extractedCount} files from zip");
-                if (skippedCount > 0)
-                {
-                    Debug.Log($"[PoiyomiPro] Skipped {skippedCount} {ExcludedSubPath} file(s); provided by ThryEditor VCC package");
-                }
                 AssetDatabase.Refresh();
                 return true;
             }
@@ -501,16 +439,10 @@ namespace Poiyomi.Pro
         /// <summary>
         /// Fallback used when the VPM package directory can't be found, or when the
         /// primary extraction failed: extracts the package manually into the Assets
-        /// folder, always applying the ThryEditor exclusion.
-        ///
-        /// This never hands the archive to AssetDatabase.ImportPackage. That importer has
-        /// no per-asset filter, and stripping ThryEditor after the fact is unreliable
-        /// because importing its scripts triggers a domain reload that discards our
-        /// callbacks. Copying the files ourselves means ThryEditor is simply never written.
+        /// folder.
         ///
         /// Dispatch: ".zip" uses the zip extractor; every other extension (including the
-        /// downloader's default of ".unitypackage") is treated as a unitypackage. If that
-        /// fails we fail closed - returning false rather than risk an unfiltered import.
+        /// downloader's default of ".unitypackage") is treated as a unitypackage.
         /// </summary>
         private static async Task<bool> FallbackToAssetsImport(string packagePath)
         {
@@ -520,17 +452,17 @@ namespace Poiyomi.Pro
             {
                 if (packagePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                 {
-                    Debug.Log($"[PoiyomiPro] Extracting zip into Assets (excluding {ExcludedSubPath})");
+                    Debug.Log("[PoiyomiPro] Extracting zip into Assets");
                     return await ExtractZipToDirectory(packagePath, assetsDir);
                 }
 
-                Debug.Log($"[PoiyomiPro] Extracting unitypackage into Assets (excluding {ExcludedSubPath})");
+                Debug.Log("[PoiyomiPro] Extracting unitypackage into Assets");
                 return await ExtractUnityPackageToDirectory(packagePath, assetsDir, allowFallback: false);
             }
             catch (Exception ex)
             {
                 // Fail closed: never fall back to an unfiltered import that could pull in ThryEditor.
-                Debug.LogError($"[PoiyomiPro] Manual extraction into Assets failed (ThryEditor exclusion enforced): {ex.Message}\n{ex.StackTrace}");
+                Debug.LogError($"[PoiyomiPro] Manual extraction into Assets failed: {ex.Message}\n{ex.StackTrace}");
                 return false;
             }
         }
